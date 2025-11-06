@@ -1,0 +1,297 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Socket Social</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { background-color: #121212; color: #e0e0e0; }
+        .form-input { background-color: #1e1e1e; border: 1px solid #333; border-radius: 4px; padding: 8px 12px; color: #e0e0e0; }
+        .btn { background-color: #6200ee; color: white; font-weight: bold; padding: 10px 15px; border-radius: 4px; cursor: pointer; transition: background-color 0.2s; }
+        .btn:hover { background-color: #3700b3; }
+        .btn-secondary { background-color: #03dac6; color: #121212; }
+        .btn-secondary:hover { background-color: #018786; }
+        .btn-danger { background-color: #cf6679; color: #121212; }
+        .btn-danger:hover { background-color: #b00020; }
+        .btn-disabled { background-color: #333; color: #888; cursor: not-allowed; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 16px; }
+        .media-container img, .media-container video { max-height: 400px; border-radius: 8px; margin-top: 12px; }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen">
+
+    <!-- Auth Container -->
+    <div id="auth-container" class="w-full max-w-md p-8 space-y-8 card">
+        <div>
+            <h2 class="text-3xl font-bold text-center">Socket Social</h2>
+            <p id="auth-message" class="text-red-500 text-center mt-2">&nbsp;</p>
+        </div>
+        <form id="signup-form" class="space-y-4">
+             <h3 class="text-xl font-semibold">Create an Account</h3>
+            <div>
+                <label for="signup-username" class="block mb-1">Username</label>
+                <input id="signup-username" type="text" required class="w-full form-input">
+            </div>
+            <div>
+                <label for="signup-password" class="block mb-1">Password</label>
+                <input id="signup-password" type="password" required class="w-full form-input">
+            </div>
+            <button type="submit" class="w-full btn">Sign Up</button>
+        </form>
+        <div class="border-t border-gray-600 my-4"></div>
+        <form id="login-form" class="space-y-4">
+            <h3 class="text-xl font-semibold">Log In</h3>
+            <div>
+                <label for="login-username" class="block mb-1">Username</label>
+                <input id="login-username" type="text" required class="w-full form-input">
+            </div>
+            <div>
+                <label for="login-password" class="block mb-1">Password</label>
+                <input id="login-password" type="password" required class="w-full form-input">
+            </div>
+            <button type="submit" class="w-full btn">Log In</button>
+        </form>
+    </div>
+
+    <!-- App Container -->
+    <div id="app-container" class="hidden w-full max-w-6xl p-8 space-y-6">
+        <div class="flex justify-between items-center">
+            <h2 class="text-2xl font-bold">Welcome, <span id="welcome-username"></span>!</h2>
+            <button id="logout-btn" class="btn btn-danger">Logout</button>
+        </div>
+        <div class="card">
+            <form id="post-form" class="space-y-3">
+                <h3 class="text-xl font-semibold">Create a New Post</h3>
+                <textarea id="post-text" placeholder="What's on your mind?" rows="3" class="w-full form-input"></textarea>
+                <input type="file" id="media-file" name="media" accept="image/*,video/*" class="w-full form-input">
+                <button type="submit" class="btn">Post</button>
+            </form>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div class="md:col-span-2 space-y-4">
+                <h3 class="text-xl font-semibold">Your Feed</h3>
+                <div id="feed-container" class="space-y-4"></div>
+            </div>
+            <div class="space-y-4">
+                <h3 class="text-xl font-semibold">All Users</h3>
+                <div id="users-container" class="space-y-2"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            let socket;
+            let currentUser = null;
+
+            const authContainer = document.getElementById('auth-container');
+            const appContainer = document.getElementById('app-container');
+            const authMessage = document.getElementById('auth-message');
+            const signupForm = document.getElementById('signup-form');
+            const loginForm = document.getElementById('login-form');
+            const logoutBtn = document.getElementById('logout-btn');
+            const welcomeUsername = document.getElementById('welcome-username');
+            const postForm = document.getElementById('post-form');
+            const postText = document.getElementById('post-text');
+            const mediaFile = document.getElementById('media-file');
+            const feedContainer = document.getElementById('feed-container');
+            const usersContainer = document.getElementById('users-container');
+
+            const showMessage = (message, isError = true) => {
+                authMessage.textContent = message;
+                authMessage.className = isError ? 'text-red-500 text-center mt-2' : 'text-green-500 text-center mt-2';
+            };
+
+            const connectSocket = () => {
+                socket = io();
+                socket.on('connect_error', (err) => {
+                    console.error('Socket error:', err.message);
+                    showMessage('Session expired. Please log in again.');
+                    showAuthView();
+                });
+                socket.on('disconnect', () => console.log('Socket disconnected'));
+                socket.on('feedData', renderFeed);
+                socket.on('allUsers', ({ allUsers, following }) => renderUsers(allUsers, following));
+                socket.on('newPost', prependPost);
+                socket.on('follow_success', ({ username }) => {
+                    const btn = usersContainer.querySelector(`[data-username="${username}"]`);
+                    if (btn) {
+                        btn.textContent = 'Following';
+                        btn.disabled = true;
+                        btn.classList.add('btn-disabled');
+                    }
+                    socket.emit('getFeed');
+                });
+            };
+
+            const initializeApp = (username) => {
+                currentUser = username;
+                welcomeUsername.textContent = username;
+                authContainer.classList.add('hidden');
+                appContainer.classList.remove('hidden');
+                connectSocket();
+                setTimeout(() => {
+                    if (socket.connected) {
+                        socket.emit('getFeed');
+                        socket.emit('getAllUsers');
+                    } else {
+                        console.error("Socket not connected yet, cannot fetch initial data.");
+                    }
+                }, 200);
+            };
+
+            const showAuthView = () => {
+                currentUser = null;
+                if (socket) socket.disconnect();
+                document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+                authContainer.classList.remove('hidden');
+                appContainer.classList.add('hidden');
+            };
+
+            signupForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(signupForm);
+                const { username, password } = Object.fromEntries(formData.entries());
+                try {
+                    const res = await fetch('/api/signup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.message);
+                    showMessage(data.message, false);
+                    signupForm.reset();
+                } catch (err) {
+                    showMessage(err.message);
+                }
+            });
+
+            loginForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(loginForm);
+                const { username, password } = Object.fromEntries(formData.entries());
+                try {
+                    const res = await fetch('/api/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.message);
+                    initializeApp(data.username);
+                } catch (err) {
+                    showMessage(err.message);
+                }
+            });
+
+            logoutBtn.addEventListener('click', async () => {
+                await fetch('/api/logout', { method: 'POST' });
+                showAuthView();
+                showMessage('You have been logged out.', false);
+            });
+
+            postForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const text = postText.value;
+                const file = mediaFile.files[0];
+                if (!text && !file) {
+                    alert('Please add some text or a file to your post.');
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('text', text);
+                if (file) {
+                    formData.append('media', file);
+                }
+                try {
+                    const res = await fetch('/api/posts', {
+                        method: 'POST',
+                        body: formData, // No 'Content-Type' header, browser sets it for multipart/form-data
+                    });
+                    if (!res.ok) {
+                         const errorData = await res.json();
+                         throw new Error(errorData.message || 'Failed to create post');
+                    }
+                    postForm.reset();
+                } catch (err) {
+                    console.error('Post creation failed:', err);
+                    alert(`Error: ${err.message}`);
+                }
+            });
+
+            usersContainer.addEventListener('click', (e) => {
+                if (e.target.matches('.follow-btn') && !e.target.disabled) {
+                    const usernameToFollow = e.target.dataset.username;
+                    if (socket) socket.emit('followUser', { usernameToFollow });
+                }
+            });
+
+            const createPostHTML = (post) => {
+                let mediaHTML = '';
+                if (post.mediaPath) {
+                    if (post.mediaType && post.mediaType.startsWith('image/')) {
+                        mediaHTML = `<div class="media-container"><img src="${post.mediaPath}" alt="Post media"></div>`;
+                    } else if (post.mediaType && post.mediaType.startsWith('video/')) {
+                        mediaHTML = `<div class="media-container"><video controls src="${post.mediaPath}"></video></div>`;
+                    }
+                }
+                return `
+                    <div class="card" id="post-${post.postId}">
+                        <div class="flex items-center mb-2">
+                            <b class="mr-2">@${post.authorUsername}</b>
+                            <span class="text-xs text-gray-400">${new Date(post.timestamp).toLocaleString()}</span>
+                        </div>
+                        <p class="whitespace-pre-wrap">${post.text}</p>
+                        ${mediaHTML}
+                    </div>
+                `;
+            };
+
+            const prependPost = (post) => {
+                feedContainer.insertAdjacentHTML('afterbegin', createPostHTML(post));
+            };
+
+            const renderFeed = (posts) => {
+                feedContainer.innerHTML = !posts || posts.length === 0 
+                    ? '<p class="text-gray-400">Your feed is empty. Follow users or create a post!</p>'
+                    : posts.map(createPostHTML).join('');
+            };
+
+            const renderUsers = (allUsers, following) => {
+                usersContainer.innerHTML = allUsers
+                    .filter(user => user !== currentUser)
+                    .map(user => {
+                        const isFollowing = following.includes(user);
+                        return `
+                            <div class="flex items-center justify-between p-2 rounded hover:bg-gray-700">
+                                <span>@${user}</span>
+                                <button data-username="${user}" class="follow-btn btn btn-sm ${isFollowing ? 'btn-disabled' : 'btn-secondary'}" ${isFollowing ? 'disabled' : ''}>${isFollowing ? 'Following' : 'Follow'}</button>
+                            </div>
+                        `;
+                    })
+                    .join('');
+            };
+
+            // --- Initial Session Check ---
+            (async () => {
+                try {
+                    const res = await fetch('/api/session-check');
+                    if (res.ok) {
+                        const data = await res.json();
+                        initializeApp(data.username);
+                    } else {
+                        showAuthView();
+                    }
+                } catch (err) {
+                    console.error('Session check failed:', err);
+                    showAuthView();
+                }
+            })();
+        });
+    </script>
+</body>
+</html>
